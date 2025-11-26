@@ -1,0 +1,266 @@
+import requests
+import pandas as pd
+from geopy.geocoders import Nominatim
+from datetime import datetime
+import os
+import json
+import folium
+
+# --- Configurações ---
+geolocator = Nominatim(user_agent="autonomous_monitor_agent")
+event_data = []
+
+# --- Funções de Coleta de Dados ---
+def collect_acled_data(api_key=None):
+    print("Coletando dados de eventos de conflito (ACLED simulado)...")
+    simulated_data = [
+        {
+            "event_id": "ACLED-001", "event_date": "2025-11-24", "event_time": "14:00:00",
+            "event_type": "Violence against civilians", "sub_event_type": "Attack", "actor1": "Military Forces",
+            "location": "Cidade X, Bairro Y", "latitude": 34.05, "longitude": -118.25, "fatalities": 5, "source": "ACLED"
+        },
+        {
+            "event_id": "ACLED-002", "event_date": "2025-11-25", "event_time": "08:30:00",
+            "event_type": "Battles", "sub_event_type": "Armed clash", "actor1": "Rebel Group Z",
+            "location": "Floresta A, perto do Rio B", "latitude": 34.10, "longitude": -118.30, "fatalities": 2, "source": "ACLED"
+        }
+    ]
+    for item in simulated_data:
+        event_data.append({
+            "id_evento": item["event_id"],
+            "timestamp": datetime.strptime(f"{item['event_date']} {item['event_time']}", "%Y-%m-%d %H:%M:%S"),
+            "fonte": item["source"],
+            "tipo_impacto": "Humano",
+            "subtipo_impacto": item["event_type"],
+            "latitude": item["latitude"],
+            "longitude": item["longitude"],
+            "local_descricao": item["location"],
+            "severidade": item["fatalities"],
+            "detalhes_texto": f"Conflito reportado entre {item['actor1']} resultando em {item['fatalities']} fatalidades.",
+            "url_referencia": "https://acleddata.com/simulated"
+        })
+    print(f"Coletados {len(simulated_data)} eventos ACLED simulados.")
+
+def collect_nasa_firms_data():
+    print("Coletando dados de anomalias térmicas (FIRMS simulado)...")
+    simulated_data = [
+        {
+            "acq_date": "2025-11-25", "acq_time": "1130", "latitude": 34.08, "longitude": -118.28,
+            "brightness": 350.5, "confidence": 90, "satellite": "Terra"
+        },
+        {
+            "acq_date": "2025-11-25", "acq_time": "1245", "latitude": 34.09, "longitude": -118.29,
+            "brightness": 300.1, "confidence": 80, "satellite": "Aqua"
+        }
+    ]
+    for i, item in enumerate(simulated_data):
+        time_str = f"{item['acq_date']} {item['acq_time'][:2]}:{item['acq_time'][2:]}:00"
+        event_data.append({
+            "id_evento": f"FIRMS-{item['satellite']}-{i+1}",
+            "timestamp": datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S"),
+            "fonte": "NASA FIRMS",
+            "tipo_impacto": "Ambiental",
+            "subtipo_impacto": "Anomalia Térmica (Incêndio)",
+            "latitude": item["latitude"],
+            "longitude": item["longitude"],
+            "local_descricao": "Detectado por satélite",
+            "severidade": item["confidence"] // 20,
+            "detalhes_texto": f"Anomalia térmica detectada com confiança de {item['confidence']}% e brilho de {item['brightness']}K.",
+            "url_referencia": "https://firms.modaps.eosdis.nasa.gov/simulated"
+        })
+    print(f"Coletados {len(simulated_data)} eventos FIRMS simulados.")
+
+def run_collection():
+    collect_acled_data()
+    collect_nasa_firms_data()
+    df = pd.DataFrame(event_data)
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df = df.set_index("timestamp").sort_index()
+    return df
+
+def analyze_data(df):
+    print("\nIniciando Análise de Dados...")
+    df["latitude"] = pd.to_numeric(df["latitude"])
+    df["longitude"] = pd.to_numeric(df["longitude"])
+    def normalize_human_severity(row):
+        if row["tipo_impacto"] == "Humano":
+            if row["severidade"] >= 5: return 5
+            elif row["severidade"] >= 2: return 4
+            else: return 3
+        return row["severidade"]
+    df["severidade"] = df.apply(normalize_human_severity, axis=1)
+    def categorize_impact(row):
+        if row["fonte"] == "NASA FIRMS": return "Ambiental (Fogo)"
+        elif row["subtipo_impacto"] in ["Violence against civilians", "Armed clash"]: return "Humano (Conflito)"
+        return row["tipo_impacto"]
+    df["categoria_analise"] = df.apply(categorize_impact, axis=1)
+    print(f"Análise concluída. Total de {len(df)} eventos processados.")
+    
+    # 4. Análise de Prioridade de Regeneração Ambiental
+    df = analyze_regeneration_priority(df)
+    
+    return df
+
+def analyze_regeneration_priority(df):
+    """
+    Calcula a prioridade de regeneração ambiental.
+    A prioridade é baseada em:
+    1. Severidade do Impacto Ambiental (maior severidade = maior prioridade).
+    2. Tipo de Impacto (Ambiental > Humano).
+    3. Proximidade de outros eventos (clustering - simplificado).
+    """
+    print("\nIniciando Análise de Prioridade de Regeneração...")
+    
+    # 1. Base de Prioridade: Severidade
+    df["prioridade_regeneracao"] = df["severidade"]
+    
+    # 2. Fator de Multiplicação por Tipo de Impacto
+    # Damos mais peso aos impactos ambientais diretos
+    df["prioridade_regeneracao"] = df.apply(
+        lambda row: row["prioridade_regeneracao"] * 1.5 
+        if "Ambiental" in row["categoria_analise"] else row["prioridade_regeneracao"],
+        axis=1
+    )
+    
+    # 3. Fator de Multiplicação por Tipo Específico (Ex: Fogo é mais urgente)
+    df["prioridade_regeneracao"] = df.apply(
+        lambda row: row["prioridade_regeneracao"] * 1.2 
+        if "Fogo" in row["categoria_analise"] else row["prioridade_regeneracao"],
+        axis=1
+    )
+    
+    # 4. Simplificação de Clustering (Eventos próximos)
+    # Para simplificar, vamos aumentar a prioridade de eventos que estão muito próximos
+    # (Em um projeto real, usaria DBSCAN ou K-Means em lat/lon)
+    # Simulação: Se a latitude for muito próxima (dentro de 0.05 graus), aumenta a prioridade
+    
+    # Esta é uma simulação muito simplificada e não robusta, mas demonstra o conceito.
+    df["prioridade_regeneracao"] = df.apply(
+        lambda row: row["prioridade_regeneracao"] + 1 
+        if any((abs(df["latitude"] - row["latitude"]) < 0.05) & (df.index != row.name)) else row["prioridade_regeneracao"],
+        axis=1
+    )
+    
+    # Normaliza a prioridade final para uma escala de 1 a 10
+    min_p = df["prioridade_regeneracao"].min()
+    max_p = df["prioridade_regeneracao"].max()
+    
+    if max_p > min_p:
+        df["prioridade_regeneracao_final"] = (df["prioridade_regeneracao"] - min_p) / (max_p - min_p) * 9 + 1
+    else:
+        df["prioridade_regeneracao_final"] = 5 # Valor médio se todos forem iguais
+        
+    df["prioridade_regeneracao_final"] = df["prioridade_regeneracao_final"].round(1)
+    
+    print("Análise de Prioridade de Regeneração concluída.")
+    return df
+
+def generate_reports(df):
+    """
+    Gera relatórios e visualizações de dados.
+    1. Mapa Interativo (Folium)
+    2. Resumo em Markdown
+    """
+    print("\nIniciando Geração de Relatórios...")
+    
+    # 1. Mapa Interativo (Folium)
+    # Centraliza o mapa na média das coordenadas
+    center_lat = df["latitude"].mean()
+    center_lon = df["longitude"].mean()
+    
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=10)
+    
+    for index, row in df.iterrows():
+        color = "red" if "Humano" in row["categoria_analise"] else "orange"
+        popup_text = f"""
+        <b>Tipo:</b> {row["categoria_analise"]}<br>
+        <b>Local:</b> {row["local_descricao"]}<br>
+        <b>Severidade:</b> {row["severidade"]}/5<br>
+        <b>Prioridade Reg.:</b> {row["prioridade_regeneracao_final"]}/10<br>
+        <b>Detalhes:</b> {row["detalhes_texto"][:50]}...
+        """
+        folium.CircleMarker(
+            location=[row["latitude"], row["longitude"]],
+            radius=row["severidade"] * 2, # Tamanho do marcador proporcional à severidade
+            color=color,
+            fill=True,
+            fill_color=color,
+            popup=folium.Popup(popup_text, max_width=300)
+        ).add_to(m)
+        
+    map_path = "impact_map.html"
+    m.save(map_path)
+    print(f"Mapa interativo salvo em {map_path}")
+    
+    # 2. Resumo em Markdown
+    report_path = "impact_report.md"
+    
+    total_events = len(df)
+    impact_summary = df.groupby("categoria_analise")["id_evento"].count().sort_values(ascending=False)
+    
+    report_content = f"""# Relatório de Monitoramento de Impacto em Tempo Real
+
+**Data de Geração:** {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+**Total de Eventos Monitorados:** {total_events}
+
+## Resumo de Impactos
+
+| Categoria de Impacto | Contagem de Eventos |
+| :--- | :--- |
+"""
+    for category, count in impact_summary.items():
+        report_content += f"| {category} | {count} |\n"
+        
+    report_content += "\n## Prioridades de Regeneração (Top 3)\n\n"
+    
+    # Filtra apenas eventos ambientais para a prioridade de regeneração
+    regeneration_events = df[df["tipo_impacto"] == "Ambiental"].sort_values(by="prioridade_regeneracao_final", ascending=False).head(3)
+    
+    for index, row in regeneration_events.iterrows():
+        report_content += f"""
+### PRIORIDADE {row["prioridade_regeneracao_final"]}/10 - {row["categoria_analise"]}
+*   **Local:** {row["local_descricao"]} ({row["latitude"]:.2f}, {row["longitude"]:.2f})
+*   **Data/Hora:** {index.strftime("%Y-%m-%d %H:%M:%S")}
+*   **Severidade:** {row["severidade"]}/5
+*   **Ação Sugerida:** Iniciar avaliação de campo para {row["subtipo_impacto"].lower()}.
+*   **Detalhes:** {row["detalhes_texto"]}
+*   **Fonte:** {row["fonte"]} ([Referência]({row["url_referencia"]}))
+"""
+    
+    report_content += "\n## Eventos de Alta Severidade (Severidade Humana >= 4)\n\n"
+    
+    high_severity_events = df[df["severidade"] >= 4].sort_values(by="severidade", ascending=False)
+    
+    for index, row in high_severity_events.iterrows():
+        report_content += f"""
+### Evento {row["id_evento"]} - {row["categoria_analise"]}
+*   **Local:** {row["local_descricao"]} ({row["latitude"]:.2f}, {row["longitude"]:.2f})
+*   **Data/Hora:** {index.strftime("%Y-%m-%d %H:%M:%S")}
+*   **Severidade:** {row["severidade"]}/5
+*   **Detalhes:** {row["detalhes_texto"]}
+*   **Fonte:** {row["fonte"]} ([Referência]({row["url_referencia"]}))
+"""
+    
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write(report_content)
+        
+    print(f"Relatório em Markdown salvo em {report_path}")
+    
+    return map_path, report_path
+
+if __name__ == "__main__":
+    print("Iniciando Agente de Monitoramento...")
+    df_events = run_collection()
+    if not df_events.empty:
+        df_analyzed = analyze_data(df_events)
+        print("\n--- Dados Analisados (Amostra) ---")
+        print(df_analyzed[["categoria_analise", "severidade", "local_descricao"]].head())
+        df_analyzed.to_csv("analyzed_events.csv")
+        print("\nDados analisados salvos em analyzed_events.csv")
+        
+        # 3. Geração de Relatórios
+        map_file, report_file = generate_reports(df_analyzed)
+        print(f"\nRelatórios gerados: {map_file}, {report_file}")
+    else:
+        print("Nenhum evento coletado.")
+    print("\nExecução do Agente de Monitoramento concluída.")
